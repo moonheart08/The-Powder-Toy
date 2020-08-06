@@ -203,9 +203,12 @@ int Element_FIRE_update(UPDATE_FUNC_ARGS)
 
 						if (pres >= 25 && RNG::Ref().chance(1, 100000)) // Call RNG once instead of evaluating multiple if statements containing randoms
 						{
-							if (pres <= 50 && RNG::Ref().chance(1, 5))
+							if (pres <= 50)
 							{
-								parts[i].ctype = PT_BRMT;
+								if (RNG::Ref().chance(1, 2))
+									parts[i].ctype = PT_BRMT;
+								else
+									parts[i].ctype = PT_CNCT;
 								break;
 							}
 							else if (pres <= 75)
