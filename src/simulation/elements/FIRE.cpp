@@ -194,8 +194,8 @@ int Element_FIRE_update(UPDATE_FUNC_ARGS)
 					}
 					else if (parts[i].ctype == PT_ROCK) //ROCK Reactions
 					{
-						float pres = std::max(sim->pv[y / CELL][x / CELL] * 10.0f, 0.0f);
-						if (pres <= (-1))
+						float pres = std::max(sim->pv[y / CELL][x / CELL] * 10.0f, -10.0f);
+						if (pres <= (-9))
 						{
 							parts[i].ctype = PT_STNE;
 							break;
