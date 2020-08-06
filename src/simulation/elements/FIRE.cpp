@@ -200,27 +200,45 @@ int Element_FIRE_update(UPDATE_FUNC_ARGS)
 							parts[i].ctype = PT_STNE;
 							break;
 						}
-						
-						if (pres >= 75 && parts[i].temp >= 5000 && RNG::Ref().chance(1, 100000))
+
+						if (pres >= 25 && RNG::Ref().chance(1, 100000)) // Call RNG once instead of evaluating multiple if statements containing randoms
 						{
-							if (RNG::Ref().chance(1, 5)) // 1 in 5 chance TTAN to IRON
-								parts[i].ctype = PT_IRON;
-							else
-								parts[i].ctype = PT_TTAN;
-							break;
-						}
-						else if (pres >= 50 && RNG::Ref().chance(1, 100000))
-						{
-							if (RNG::Ref().chance(1, 10)) // 1 in 10 chance QRTZ changes to GOLD
-								parts[i].ctype = PT_GOLD;
-							else
-								parts[i].ctype = PT_QRTZ;
-							break;
+							if (pres <= 50 && RNG::Ref().chance(1, 5))
+							{
+								parts[i].ctype = PT_BRMT;
+								break;
+							}
+							else if (pres <= 75)
+							{
+								if (RNG::Ref().chance(1, 8)) // 1 in 8 chance QRTZ changes to GOLD
+									parts[i].ctype = PT_GOLD;
+								else if (pres >= 73) // GOLD is only option if pressure is between 73 and 75 and not already GOLD
+									parts[i].ctype = PT_GOLD;
+								else
+									parts[i].ctype = PT_QRTZ;
+								break;
+							}
+							else if (pres <= 100 && parts[i].temp >= 5000)
+							{
+								if (RNG::Ref().chance(1, 5)) // 1 in 5 chance IRON to TTAN
+									parts[i].ctype = PT_TTAN;
+								else
+									parts[i].ctype = PT_IRON;
+								break;
+							}
+							else if (pres <= 255 && parts[i].temp >= 5000 && RNG::Ref().chance(1, 5))
+							{
+								if (RNG::Ref().chance(1, 5))
+									parts[i].ctype = PT_URAN;
+								else
+									parts[i].ctype = PT_TUNG;
+								break;
+							}
 						}
 					}
-					else if (parts[i].ctype == PT_GOLD && RNG::Ref().chance(1, 100)) // 1 in 100 chance Molten GOLD sinks in STNE, 1 in 1000 in ROCK. Save some computation by running chance first
+					else if (parts[i].ctype == PT_GOLD && RNG::Ref().chance(1, 100)) // 1 in 100 chance Molten GOLD sinks in STNE, 1 in 1000 in ROCK
 					{
-						if (parts[i].y < parts[ID(r)].y && (parts[ID(r)].ctype == PT_ROCK && RNG::Ref().chance(1, 10) || parts[ID(r)].ctype == PT_STNE))
+						if (parts[ID(r)].ctype == PT_STNE || parts[i].y < parts[ID(r)].y && (parts[ID(r)].ctype == PT_ROCK && RNG::Ref().chance(1, 10)))
 						{
 							int prevy = parts[i].y;
 							parts[i].y = parts[ID(r)].y;
@@ -228,13 +246,10 @@ int Element_FIRE_update(UPDATE_FUNC_ARGS)
 							break;
 						}
 					}
-					else if (parts[i].ctype == PT_STNE) // Form ROCK with pressure
+					else if (parts[i].ctype == PT_STNE && std::max(sim->pv[y / CELL][x / CELL] * 10.0f, 0.0f) >= 20) // Form ROCK with pressure
 					{
-						if (std::max(sim->pv[y / CELL][x / CELL] * 10.0f, 0.0f) >= 20)
-						{
 							parts[i].tmp2 = RNG::Ref().between(0, 10); // Provide tmp2 for color noise
 							parts[i].ctype = PT_ROCK;
-						}
 					}
 				}
 
