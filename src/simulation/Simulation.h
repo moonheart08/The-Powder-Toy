@@ -19,6 +19,7 @@
 #include "Element.h"
 
 #define CHANNELS ((int)(MAX_TEMP-73)/100+2)
+#define IPRTL_CHANNELS 64
 
 class Snapshot;
 class SimTool;

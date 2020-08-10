@@ -5233,14 +5233,14 @@ Simulation::Simulation():
 
 	int portal_shmid = shmget(portal_key,16384,0666|IPC_CREAT); 
 	int wifi_shmid = shmget(wifi_key,8192,0666|IPC_CREAT); 
-	int portal_parts_shmid = shmget(portal_parts_key,sizeof(Particle) * 64 * 256, 0666|IPC_CREAT);
+	int portal_parts_shmid = shmget(portal_parts_key,sizeof(Particle) * IPRTL_CHANNELS * 256, 0666|IPC_CREAT);
 
 	iportal_shared_mem = (int*)shmat(portal_shmid,( void*)0, 0);
 	iwifi_shared_mem = (int*)shmat(wifi_shmid, (void*)0, 0);
 	iportal_part_buf = (Particle*)shmat(portal_parts_shmid, (void*)0, 0);
 	memset((char*)iwifi_shared_mem, 0, 8192);
 	memset((char*)iportal_shared_mem, 0, 16384);
-	memset((char*)iportal_part_buf, 0, sizeof(Particle) * 64 * 256);
+	memset((char*)iportal_part_buf, 0, sizeof(Particle) * IPRTL_CHANNELS * 256);
 
 	printf("%p %p %p\n", (void*)iportal_shared_mem,(void*) iwifi_shared_mem, (void*)iportal_part_buf);
 }

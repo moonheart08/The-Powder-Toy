@@ -24,7 +24,7 @@ void Element::Element_IPTI()
 }
 
 bool IPRTL_add_part(Simulation* sim, Particle* part, int uchannel) {
-	int channel = uchannel % 64;
+	int channel = uchannel % IPRTL_CHANNELS;
 	std::atomic<int>* ctrlshm = (std::atomic<int>*)sim->iportal_shared_mem;
 	Particle* partshm = sim->iportal_part_buf;
 	//printf("%ld\n", sizeof(std::atomic<int>));
@@ -42,7 +42,7 @@ bool IPRTL_add_part(Simulation* sim, Particle* part, int uchannel) {
 		return false;
 	}
 	//printf("I2 %d %d\n", ctrlshm[channel * 4 + 1].load(), ctrlshm[channel * 4].load());
-	int foo = 64 * channel + bufpos;
+	int foo = 256 * channel + bufpos;
 	//printf("%d\n", foo);
 	//std::raise(SIGINT);
 	partshm[foo] = *part;
@@ -54,7 +54,7 @@ bool IPRTL_add_part(Simulation* sim, Particle* part, int uchannel) {
 }
 
 Particle* IPRTL_remove_part(Simulation* sim, int uchannel) {
-	int channel = uchannel % 64;
+	int channel = uchannel % IPRTL_CHANNELS;
 	std::atomic<int>* ctrlshm = (std::atomic<int>*)sim->iportal_shared_mem;
 	Particle* partshm = sim->iportal_part_buf;
 	while(ctrlshm[channel * 4].load(std::memory_order_acquire) != ctrlshm[channel * 4 + 1].load(std::memory_order_acquire)) {}; // spinloop
@@ -67,7 +67,7 @@ Particle* IPRTL_remove_part(Simulation* sim, int uchannel) {
 	auto a = atomic_fetch_sub_explicit(&ctrlshm[channel * 4 + 1], 1, std::memory_order_release) - 1;
 	atomic_fetch_sub_explicit(&ctrlshm[channel * 4], 1, std::memory_order_release);
 	//printf("o\n");
-	return &partshm[channel * 64 + a];
+	return &partshm[channel * 256 + a];
 }
 
 static int update(UPDATE_FUNC_ARGS)
