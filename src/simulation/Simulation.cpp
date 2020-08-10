@@ -1,7 +1,11 @@
 #include "Simulation.h"
-
+#include <sys/ipc.h> 
+#include <sys/shm.h> 
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <iostream>
 #include <cmath>
+#include <unistd.h>
 #include <set>
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -5211,6 +5215,34 @@ Simulation::Simulation():
 	clear_sim();
 
 	grav->gravity_mask();
+	if (open("aaaa", O_RDWR|O_CREAT, 0777) == -1) {
+		exit(-1);
+	}
+	if (open("bbbb", O_RDWR|O_CREAT, 0777) == -1) {
+		exit(-1);
+	}
+	if (open("cccc", O_RDWR|O_CREAT, 0777) == -1) {
+		exit(-1);
+	}
+	key_t portal_key = ftok("bbbb", 65);
+	key_t wifi_key = ftok("cccc", 65);
+	key_t portal_parts_key = ftok("aaaa", 65);
+	char buf[255];
+	getcwd(buf, 255);
+	printf("%s\n", buf);
+
+	int portal_shmid = shmget(portal_key,16384,0666|IPC_CREAT); 
+	int wifi_shmid = shmget(wifi_key,8192,0666|IPC_CREAT); 
+	int portal_parts_shmid = shmget(portal_parts_key,sizeof(Particle) * 64 * 256, 0666|IPC_CREAT);
+
+	iportal_shared_mem = (int*)shmat(portal_shmid,( void*)0, 0);
+	iwifi_shared_mem = (int*)shmat(wifi_shmid, (void*)0, 0);
+	iportal_part_buf = (Particle*)shmat(portal_parts_shmid, (void*)0, 0);
+	memset((char*)iwifi_shared_mem, 0, 8192);
+	memset((char*)iportal_shared_mem, 0, 16384);
+	memset((char*)iportal_part_buf, 0, sizeof(Particle) * 64 * 256);
+
+	printf("%p %p %p\n", (void*)iportal_shared_mem,(void*) iwifi_shared_mem, (void*)iportal_part_buf);
 }
 
 String Simulation::ElementResolve(int type, int ctype)

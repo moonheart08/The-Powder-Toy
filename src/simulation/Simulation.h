@@ -80,6 +80,11 @@ public:
 	int portal_rx[8];
 	int portal_ry[8];
 	int wireless[CHANNELS][2];
+
+	// Interdimensional Portals!
+	int* iportal_shared_mem;
+	int* iwifi_shared_mem;
+	Particle* iportal_part_buf;
 	//Gol sim
 	int CGOL;
 	int GSPEED;
