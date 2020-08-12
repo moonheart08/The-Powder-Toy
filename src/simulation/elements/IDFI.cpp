@@ -3,6 +3,7 @@
 
 static int update(UPDATE_FUNC_ARGS);
 static int graphics(GRAPHICS_FUNC_ARGS);
+static void create(ELEMENT_CREATE_FUNC_ARGS);
 
 void Element::Element_IDFI()
 {
@@ -13,22 +14,53 @@ void Element::Element_IDFI()
 	MenuSection = SC_SPECIAL;
 	Enabled = 1;
 
-	// element properties here
+	Advection = 0.0f;
+	AirDrag = 0.00f * CFDS;
+	AirLoss = 0.90f;
+	Loss = 0.00f;
+	Collision = 0.0f;
+	Gravity = 0.0f;
+	Diffusion = 0.00f;
+	HotAir = -0.005f	* CFDS;
+	Falldown = 0;
+
+	Flammable = 0;
+	Explosive = 0;
+	Meltable = 0;
+	Hardness = 0;
+
+	Weight = 100;
+
+	HeatConduct = 0;
+	Description = "Interdimensional Wifi. Similar to normal wifi, but can send signals across multiple instances of the game!";
+
+	Properties = TYPE_SOLID;
+
+	LowPressure = IPL;
+	LowPressureTransition = NT;
+	HighPressure = IPH;
+	HighPressureTransition = NT;
+	LowTemperature = ITL;
+	LowTemperatureTransition = NT;
+	HighTemperature = ITH;
+	HighTemperatureTransition = NT;
+
 
 	Update = &update;
 	Graphics = &graphics;
+	Create = &create;
 }
 
-static int ZERO = 0;
+static void create(ELEMENT_CREATE_FUNC_ARGS)
+{
+	std::atomic<int>* shm = (std::atomic<int>*)sim->iwifi_shared_mem;
+	sim->parts[i].life = std::atomic_fetch_add(&shm[1024], 1);
+}
 
 static int update(UPDATE_FUNC_ARGS)
 {
 	std::atomic<int>* shm = (std::atomic<int>*)sim->iwifi_shared_mem;
 	Particle& self = parts[i];
-	if (self.life == 0) {
-		std::atomic_fetch_add(&shm[1024 + (self.tmp % 1024)], 1);
-		self.life = shm[1024 + (self.tmp % 1024)];
-	}
 	bool sending_charge = false;
 	for (int rx = -1; rx < 2; rx++)
 		for (int ry = -1; ry < 2; ry++)
@@ -42,7 +74,8 @@ static int update(UPDATE_FUNC_ARGS)
 				Particle& neighbor = parts[ID(neighbor_data)];
 				if (TYP(neighbor_data) == PT_SPRK && neighbor.ctype == PT_PSCN) {
 					sending_charge = true;
-					shm[self.tmp % 1024].compare_exchange_strong(ZERO, self.life);
+					int z = 0;
+					shm[self.tmp % 1024].compare_exchange_strong(z, self.life);
 					/*{
 						sim->iwifi_shared_mem[self.tmp % 1024] = self.life;
 						//printf("chargE! 2\n");
@@ -56,7 +89,8 @@ static int update(UPDATE_FUNC_ARGS)
 			}
 	self.ctype = sim->iwifi_shared_mem[self.tmp % 1024];
 	if (!sending_charge) {
-		shm[self.tmp % 1024].compare_exchange_strong(self.life, 0);
+		int foo = self.life;
+		shm[self.tmp % 1024].compare_exchange_strong(foo, 0);
 	}
 	return 0;
 }

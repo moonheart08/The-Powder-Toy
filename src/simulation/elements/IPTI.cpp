@@ -57,22 +57,38 @@ Particle* IPRTL_remove_part(Simulation* sim, int uchannel) {
 	int channel = uchannel % IPRTL_CHANNELS;
 	std::atomic<int>* ctrlshm = (std::atomic<int>*)sim->iportal_shared_mem;
 	Particle* partshm = sim->iportal_part_buf;
-	while(ctrlshm[channel * 4].load(std::memory_order_acquire) != ctrlshm[channel * 4 + 1].load(std::memory_order_acquire)) {}; // spinloop
-	if (ctrlshm[channel * 4 + 1] <= 0) {
+	auto a = ctrlshm[channel * 4].load(std::memory_order_acquire);
+	auto b = ctrlshm[channel * 4 + 1].load(std::memory_order_acquire);
+	while(a != b) {
+		a = ctrlshm[channel * 4].load(std::memory_order_acquire);
+		b = ctrlshm[channel * 4 + 1].load(std::memory_order_acquire);
+	}; // spinloop
+	//FIXME: Failsafes have been added here to prevent a channel from freezing up entirely. Maybe prevent -1 from ever occuring in the first place? :P
+	if (a <= 0) {
+		if (a == -1) {
+			ctrlshm[channel * 4].store(0);
+			ctrlshm[channel * 4 + 1].store(0);
+		}
 		return nullptr;
 	}
-	if (ctrlshm[channel * 4] <= 0) {
+	if (b <= 0) {
+		if (b == -1) {
+			ctrlshm[channel * 4].store(0);
+			ctrlshm[channel * 4 + 1].store(0);
+		}
 		return nullptr;
 	}
-	auto a = atomic_fetch_sub_explicit(&ctrlshm[channel * 4 + 1], 1, std::memory_order_release) - 1;
+	auto adj = atomic_fetch_sub_explicit(&ctrlshm[channel * 4 + 1], 1, std::memory_order_release) - 1;
 	atomic_fetch_sub_explicit(&ctrlshm[channel * 4], 1, std::memory_order_release);
 	//printf("o\n");
-	return &partshm[channel * 256 + a];
+	return &partshm[channel * 256 + adj];
 }
 
 static int update(UPDATE_FUNC_ARGS)
 {
+	std::atomic<int>* ctrlshm = (std::atomic<int>*)sim->iportal_shared_mem;
 	Particle& self = parts[i];
+	int channel = self.tmp % IPRTL_CHANNELS;
 	for (int rx = -1; rx < 2; rx++)
 		for (int ry = -1; ry < 2; ry++)
 			if (BOUNDS_CHECK && (rx || ry))
@@ -89,7 +105,8 @@ static int update(UPDATE_FUNC_ARGS)
 					}
 				}
 			}
-
+	self.life = ctrlshm[channel * 4 + 1];
+	self.tmp2 = ctrlshm[channel * 4];
 	return 0;
 }
 
