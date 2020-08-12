@@ -5215,6 +5215,7 @@ Simulation::Simulation():
 	clear_sim();
 
 	grav->gravity_mask();
+	#ifndef _WIN32
 	if (open("aaaa", O_RDWR|O_CREAT, 0777) == -1) {
 		exit(-1);
 	}
@@ -5238,6 +5239,9 @@ Simulation::Simulation():
 	iportal_shared_mem = (int*)shmat(portal_shmid,( void*)0, 0);
 	iwifi_shared_mem = (int*)shmat(wifi_shmid, (void*)0, 0);
 	iportal_part_buf = (Particle*)shmat(portal_parts_shmid, (void*)0, 0);
+	#else
+	#error "Windows unsupported!"
+	#endif
 	memset((char*)iwifi_shared_mem, 0, 8192);
 	memset((char*)iportal_shared_mem, 0, 16384);
 	memset((char*)iportal_part_buf, 0, sizeof(Particle) * IPRTL_CHANNELS * 256);
