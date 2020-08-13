@@ -194,56 +194,54 @@ int Element_FIRE_update(UPDATE_FUNC_ARGS)
 					}
 					else if (parts[i].ctype == PT_ROCK) //ROCK Reactions
 					{
-						float pres = std::max(sim->pv[y / CELL][x / CELL] * 10.0f, -10.0f);
+						float pres = sim->pv[y / CELL][x / CELL];
 						if (pres <= (-9))
 						{
 							parts[i].ctype = PT_STNE;
 							break;
 						}
 
-						if (pres >= 25)
+						if (pres >= 25 && RNG::Ref().chance(1, 100000))
 						{
-							if (RNG::Ref().chance(1, 100000)) // Rarer occurences: Call RNG once instead of evaluating multiple if statements containing randoms
+							if (pres <= 50)
 							{
-								if (pres <= 50)
-								{
-									if (RNG::Ref().chance(1, 2))
-										parts[i].ctype = PT_BRMT;
-									else
-										parts[i].ctype = PT_CNCT;
-									break;
-								}
-								else if (pres <= 75)
-								{
-									if (RNG::Ref().chance(1, 8)) // 1 in 8 chance GOLD instead of QRTZ
-										parts[i].ctype = PT_GOLD;
-									else if (pres >= 73) // GOLD is only option if pressure is between 73 and 75 and not already GOLD
-										parts[i].ctype = PT_GOLD;
-									else
-										parts[i].ctype = PT_QRTZ;
-									break;
-								}
-								else if (pres <= 100 && parts[i].temp >= 5000)
-								{
-									if (RNG::Ref().chance(1, 5)) // 1 in 5 chance IRON to TTAN
-										parts[i].ctype = PT_TTAN;
-									else
-										parts[i].ctype = PT_IRON;
-									break;
-								}
-								else if (pres <= 255 && parts[i].temp >= 5000 && RNG::Ref().chance(1, 5))
-								{
-									if (RNG::Ref().chance(1, 5))
-										parts[i].ctype = PT_URAN;
-									else
-										parts[i].ctype = PT_TUNG;
-									break;
-								}
+								if (RNG::Ref().chance(1, 2))
+									parts[i].ctype = PT_BRMT;
+								else
+									parts[i].ctype = PT_CNCT;
+								break;
 							}
-							if (parts[ID(r)].ctype == PT_GOLD && rt == PT_LAVA && pres >=50 && RNG::Ref().chance(1, 10000)) // Produce GOLD veins
+							else if (pres <= 75)
 							{
-								parts[i].ctype = PT_GOLD;
+								if (RNG::Ref().chance(1, 8)) // 1 in 8 chance GOLD instead of QRTZ
+									parts[i].ctype = PT_GOLD;
+								else if (pres >= 73) // GOLD is only option if pressure is between 73 and 75 and not already GOLD
+									parts[i].ctype = PT_GOLD;
+								else
+									parts[i].ctype = PT_QRTZ;
+								break;
 							}
+							else if (pres <= 100 && parts[i].temp >= 5000)
+							{
+								if (RNG::Ref().chance(1, 5)) // 1 in 5 chance IRON to TTAN
+									parts[i].ctype = PT_TTAN;
+								else
+									parts[i].ctype = PT_IRON;
+								break;
+							}
+							else if (pres <= 255 && parts[i].temp >= 5000 && RNG::Ref().chance(1, 5))
+							{
+								if (RNG::Ref().chance(1, 5))
+									parts[i].ctype = PT_URAN;
+								else
+									parts[i].ctype = PT_TUNG;
+								break;
+							}
+						}
+
+						if (parts[ID(r)].ctype == PT_GOLD && pres >= 50 && RNG::Ref().chance(1, 10000)) // Produce GOLD veins/clusters
+						{
+							parts[i].ctype = PT_GOLD;
 						}
 					}
 					else if (parts[i].ctype == PT_GOLD && RNG::Ref().chance(1, 1000)) // 1 in 1000 chance Molten GOLD sinks in STNE, 1 in 10000 in ROCK
