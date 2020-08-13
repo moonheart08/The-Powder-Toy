@@ -1,8 +1,12 @@
 #include "Simulation.h"
+#ifndef _WIN32
 #include <sys/ipc.h> 
 #include <sys/shm.h> 
 #include <sys/stat.h>
 #include <fcntl.h>
+#else
+#error "no windows headers included!"
+#endif
 #include <iostream>
 #include <cmath>
 #include <unistd.h>
