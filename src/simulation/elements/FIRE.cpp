@@ -239,9 +239,11 @@ int Element_FIRE_update(UPDATE_FUNC_ARGS)
 							}
 						}
 
-						if (parts[ID(r)].ctype == PT_GOLD && pres >= 50 && RNG::Ref().chance(1, 10000)) // Produce GOLD veins/clusters
+						if (parts[ID(r)].ctype == PT_GOLD && parts[i].tmp == 0 && pres >= 50 && RNG::Ref().chance(1, 10000)) // Produce GOLD veins/clusters
 						{
 							parts[i].ctype = PT_GOLD;
+							if (parts[ID(r)].x != parts[i].x) // Trend veins vertical 
+								parts[i].tmp = 1;
 						}
 					}
 					else if (parts[i].ctype == PT_GOLD && RNG::Ref().chance(1, 1000)) // 1 in 1000 chance Molten GOLD sinks in STNE, 1 in 10000 in ROCK
