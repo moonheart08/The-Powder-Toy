@@ -38,6 +38,8 @@
 #include "simulation/ElementDefs.h"
 #include "simulation/ElementClasses.h"
 
+#include <cstring>
+
 #ifdef GetUserName
 # undef GetUserName // dammit windows
 #endif
@@ -170,6 +172,7 @@ GameView::GameView():
 	ctrlBehaviour(false),
 	altBehaviour(false),
 	showHud(true),
+	showBrush(true),
 	showDebug(false),
 	delayedActiveMenu(-1),
 	wallBrush(false),
@@ -458,6 +461,16 @@ bool GameView::GetHudEnable()
 	return showHud;
 }
 
+void GameView::SetBrushEnable(bool brushState)
+{
+	showBrush = brushState;
+}
+
+bool GameView::GetBrushEnable()
+{
+	return showBrush;
+}
+
 void GameView::SetDebugHUD(bool mode)
 {
 	showDebug = mode;
@@ -585,8 +598,19 @@ void GameView::NotifyToolListChanged(GameModel * sender)
 				}
 				else if (tempButton->GetSelectionState() == 1)
 				{
-					Favorite::Ref().RemoveFavorite(tool->GetIdentifier());
-					c->RebuildFavoritesMenu();
+					auto identifier = tool->GetIdentifier();
+					if (Favorite::Ref().IsFavorite(identifier))
+					{
+						Favorite::Ref().RemoveFavorite(identifier);
+						c->RebuildFavoritesMenu();
+					}
+					else if (identifier.BeginsWith("DEFAULT_PT_LIFECUST_"))
+					{
+						if (ConfirmPrompt::Blocking("Remove custom GOL type", "Are you sure you want to remove " + identifier.Substr(20).FromUtf8() + "?"))
+						{
+							c->RemoveCustomGOLType(identifier);
+						}
+					}
 				}
 			}
 			else
@@ -916,9 +940,9 @@ void GameView::updateToolButtonScroll()
 
 			scrollBar->Position.X = (int)(((float)mouseX/((float)XRES))*(float)(XRES-scrollSize));
 
-			float overflow = totalWidth-(XRES-BARSIZE), mouseLocation = float(XRES-3)/float((XRES-2)-mouseX); //mouseLocation adjusted slightly in case you have 200 elements in one menu
+			float overflow = float(totalWidth-(XRES-BARSIZE)), mouseLocation = float(XRES-3)/float((XRES-2)-mouseX); //mouseLocation adjusted slightly in case you have 200 elements in one menu
 
-			newInitialX += overflow/mouseLocation;
+			newInitialX += int(overflow/mouseLocation);
 		}
 		else
 		{
@@ -1258,8 +1282,6 @@ void GameView::OnKeyPress(int key, int scan, bool repeat, bool shift, bool ctrl,
 	switch(scan)
 	{
 	case SDL_SCANCODE_GRAVE:
-		SDL_StopTextInput();
-		SDL_StartTextInput();
 		c->ShowConsole();
 		break;
 	case SDL_SCANCODE_SPACE: //Space
@@ -1603,7 +1625,7 @@ void GameView::OnTick(float dt)
 
 	if(introText)
 	{
-		introText -= int(dt)>0?((int)dt < 5? dt:5):1;
+		introText -= int(dt)>0?(int(dt) < 5? int(dt):5):1;
 		if(introText < 0)
 			introText  = 0;
 	}
@@ -1679,6 +1701,12 @@ void GameView::DoTextInput(String text)
 {
 	if (c->TextInput(text))
 		Window::DoTextInput(text);
+}
+
+void GameView::DoTextEditing(String text)
+{
+	if (c->TextEditing(text))
+		Window::DoTextEditing(text);
 }
 
 void GameView::DoKeyPress(int key, int scan, bool repeat, bool shift, bool ctrl, bool alt)
@@ -1927,7 +1955,7 @@ void GameView::OnDraw()
 		ren->clearScreen(1.0f);
 		ren->RenderBegin();
 		ren->SetSample(c->PointTranslate(currentMouse).X, c->PointTranslate(currentMouse).Y);
-		if (selectMode == SelectNone && (!zoomEnabled || zoomCursorFixed) && activeBrush && (isMouseDown || (currentMouse.X >= 0 && currentMouse.X < XRES && currentMouse.Y >= 0 && currentMouse.Y < YRES)))
+		if (showBrush && selectMode == SelectNone && (!zoomEnabled || zoomCursorFixed) && activeBrush && (isMouseDown || (currentMouse.X >= 0 && currentMouse.X < XRES && currentMouse.Y >= 0 && currentMouse.Y < YRES)))
 		{
 			ui::Point finalCurrentMouse = c->PointTranslate(currentMouse);
 			ui::Point initialDrawPoint = drawPoint1;
@@ -2094,7 +2122,7 @@ void GameView::OnDraw()
 		String sampleInfo = String::Build("#", screenshotIndex, " ", String(0xE00E), " REC");
 
 		int textWidth = Graphics::textwidth(sampleInfo);
-		g->fillrect(XRES-20-textWidth, 12, textWidth+8, 15, 0, 0, 0, 255*0.5);
+		g->fillrect(XRES-20-textWidth, 12, textWidth+8, 15, 0, 0, 0, 127);
 		g->drawtext(XRES-16-textWidth, 16, sampleInfo, 255, 50, 20, 255);
 	}
 	else if(showHud)
@@ -2152,16 +2180,18 @@ void GameView::OnDraw()
 					if (wavelengthGfx)
 						sampleInfo << " (" << ctype << ")";
 					// Some elements store extra LIFE info in upper bits of ctype, instead of tmp/tmp2
-					else if (type == PT_CRAY || type == PT_DRAY || type == PT_CONV)
+					else if (type == PT_CRAY || type == PT_DRAY || type == PT_CONV || type == PT_LDTC)
 						sampleInfo << " (" << c->ElementResolve(TYP(ctype), ID(ctype)) << ")";
+					else if (type == PT_CLNE || type == PT_BCLN || type == PT_PCLN || type == PT_PBCN || type == PT_DTEC)
+						sampleInfo << " (" << c->ElementResolve(ctype, sample.particle.tmp) << ")";
 					else if (c->IsValidElement(ctype))
 						sampleInfo << " (" << c->ElementResolve(ctype, -1) << ")";
-					else
-						sampleInfo << " ()";
+					else if (ctype)
+						sampleInfo << " (" << ctype << ")";
 				}
 				sampleInfo << ", Temp: " << (sample.particle.temp - 273.15f) << " C";
 				sampleInfo << ", Life: " << sample.particle.life;
-				if (sample.particle.type != PT_RFRG && sample.particle.type != PT_RFGL)
+				if (sample.particle.type != PT_RFRG && sample.particle.type != PT_RFGL && sample.particle.type != PT_LIFE)
 				{
 					if (sample.particle.type == PT_CONV)
 					{
@@ -2178,7 +2208,7 @@ void GameView::OnDraw()
 				}
 
 				// only elements that use .tmp2 show it in the debug HUD
-				if (type == PT_CRAY || type == PT_DRAY || type == PT_EXOT || type == PT_LIGH || type == PT_SOAP || type == PT_TRON || type == PT_VIBR || type == PT_VIRS || type == PT_WARP || type == PT_LCRY || type == PT_CBNW || type == PT_TSNS || type == PT_DTEC || type == PT_LSNS || type == PT_PSTN || type == PT_LDTC)
+				if (type == PT_CRAY || type == PT_DRAY || type == PT_EXOT || type == PT_LIGH || type == PT_SOAP || type == PT_TRON || type == PT_VIBR || type == PT_VIRS || type == PT_WARP || type == PT_LCRY || type == PT_CBNW || type == PT_TSNS || type == PT_DTEC || type == PT_LSNS || type == PT_PSTN || type == PT_LDTC || type == PT_VSNS)
 					sampleInfo << ", Tmp2: " << sample.particle.tmp2;
 
 				sampleInfo << ", Pressure: " << sample.AirPressure;
@@ -2205,8 +2235,8 @@ void GameView::OnDraw()
 		}
 
 		int textWidth = Graphics::textwidth(sampleInfo.Build());
-		g->fillrect(XRES-20-textWidth, 12, textWidth+8, 15, 0, 0, 0, alpha*0.5f);
-		g->drawtext(XRES-16-textWidth, 16, sampleInfo.Build(), 255, 255, 255, alpha*0.75f);
+		g->fillrect(XRES-20-textWidth, 12, textWidth+8, 15, 0, 0, 0, int(alpha*0.5f));
+		g->drawtext(XRES-16-textWidth, 16, sampleInfo.Build(), 255, 255, 255, int(alpha*0.75f));
 
 #ifndef OGLI
 		if (wavelengthGfx)
@@ -2262,8 +2292,8 @@ void GameView::OnDraw()
 				sampleInfo << ", AHeat: " << sample.AirTemperature - 273.15f << " C";
 
 			textWidth = Graphics::textwidth(sampleInfo.Build());
-			g->fillrect(XRES-20-textWidth, 27, textWidth+8, 14, 0, 0, 0, alpha*0.5f);
-			g->drawtext(XRES-16-textWidth, 30, sampleInfo.Build(), 255, 255, 255, alpha*0.75f);
+			g->fillrect(XRES-20-textWidth, 27, textWidth+8, 14, 0, 0, 0, int(alpha*0.5f));
+			g->drawtext(XRES-16-textWidth, 30, sampleInfo.Build(), 255, 255, 255, int(alpha*0.75f));
 		}
 	}
 
@@ -2291,8 +2321,8 @@ void GameView::OnDraw()
 
 		int textWidth = Graphics::textwidth(fpsInfo.Build());
 		int alpha = 255-introText*5;
-		g->fillrect(12, 12, textWidth+8, 15, 0, 0, 0, alpha*0.5);
-		g->drawtext(16, 16, fpsInfo.Build(), 32, 216, 255, alpha*0.75);
+		g->fillrect(12, 12, textWidth+8, 15, 0, 0, 0, int(alpha*0.5));
+		g->drawtext(16, 16, fpsInfo.Build(), 32, 216, 255, int(alpha*0.75));
 	}
 
 	//Tooltips
@@ -2316,7 +2346,7 @@ void GameView::OnDraw()
 	}
 
 	//Introduction text
-	if(introText)
+	if(introText && showHud)
 	{
 		g->fillrect(0, 0, WINDOWW, WINDOWH, 0, 0, 0, introText>51?102:introText*2);
 		g->drawtext(16, 20, introTextMessage, 255, 255, 255, introText>51?255:introText*5);

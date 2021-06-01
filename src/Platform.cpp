@@ -19,6 +19,7 @@
 #endif
 
 #include "Misc.h"
+#include "client/Client.h"
 
 namespace Platform
 {
@@ -27,9 +28,14 @@ ByteString ExecutableName()
 {
 	ByteString ret;
 #if defined(WIN)
-	char *name = (char *)malloc(64);
+	using Char = wchar_t;
+#elif defined(LIN)
+	using Char = char;
+#endif
+#if defined(WIN)
+	wchar_t *name = (wchar_t *)malloc(sizeof(wchar_t) * 64);
 	DWORD max = 64, res;
-	while ((res = GetModuleFileName(NULL, name, max)) >= max)
+	while ((res = GetModuleFileNameW(NULL, name, max)) >= max)
 	{
 #elif defined MACOSX
 	char *fn = (char*)malloc(64),*name = (char*)malloc(PATH_MAX);
@@ -58,10 +64,10 @@ ByteString ExecutableName()
 #endif
 #ifndef MACOSX
 		max *= 2;
-		char* realloced_name = (char *)realloc(name, max);
+		Char* realloced_name = (Char *)realloc(name, sizeof(Char) * max);
 		assert(realloced_name != NULL);
 		name = realloced_name;
-		memset(name, 0, max);
+		memset(name, 0, sizeof(Char) * max);
 	}
 #endif
 	if (res <= 0)
@@ -69,7 +75,11 @@ ByteString ExecutableName()
 		free(name);
 		return "";
 	}
+#if defined(WIN)
+	ret = WinNarrow(name);
+#else
 	ret = name;
+#endif
 	free(name);
 	return ret;
 }
@@ -80,10 +90,27 @@ void DoRestart()
 	if (exename.length())
 	{
 #ifdef WIN
-		ShellExecute(NULL, "open", exename.c_str(), NULL, NULL, SW_SHOWNORMAL);
+		int ret = int(INT_PTR(ShellExecuteW(NULL, NULL, WinWiden(exename).c_str(), NULL, NULL, SW_SHOWNORMAL)));
+		if (ret <= 32)
+		{
+			fprintf(stderr, "cannot restart: ShellExecute(...) failed: code %i\n", ret);
+		}
+		else
+		{
+#if !defined(RENDERER) && !defined(FONTEDITOR)
+			Client::Ref().Shutdown(); // very ugly hack; will fix soon(tm)
+#endif
+			exit(0);
+		}
 #elif defined(LIN) || defined(MACOSX)
 		execl(exename.c_str(), "powder", NULL);
+		int ret = errno;
+		fprintf(stderr, "cannot restart: execl(...) failed: code %i\n", ret);
 #endif
+	}
+	else
+	{
+		fprintf(stderr, "cannot restart: no executable name???\n");
 	}
 	exit(-1);
 }
@@ -91,19 +118,22 @@ void DoRestart()
 void OpenURI(ByteString uri)
 {
 #if defined(WIN)
-	ShellExecute(0, "OPEN", uri.c_str(), NULL, NULL, 0);
+	if (int(INT_PTR(ShellExecuteW(NULL, NULL, WinWiden(uri).c_str(), NULL, NULL, SW_SHOWNORMAL))) <= 32)
+	{
+		fprintf(stderr, "cannot open URI: ShellExecute(...) failed\n");
+	}
 #elif defined(MACOSX)
-	char *cmd = (char*)malloc(7+uri.length());
-	strcpy(cmd, "open ");
-	strappend(cmd, (char*)uri.c_str());
-	system(cmd);
+	if (system(("open \"" + uri + "\"").c_str()))
+	{
+		fprintf(stderr, "cannot open URI: system(...) failed\n");
+	}
 #elif defined(LIN)
-	char *cmd = (char*)malloc(11+uri.length());
-	strcpy(cmd, "xdg-open ");
-	strappend(cmd, (char*)uri.c_str());
-	system(cmd);
+	if (system(("xdg-open \"" + uri + "\"").c_str()))
+	{
+		fprintf(stderr, "cannot open URI: system(...) failed\n");
+	}
 #else
-	printf("Cannot open browser\n");
+	fprintf(stderr, "cannot open URI: not implemented\n");
 #endif
 }
 
@@ -146,4 +176,57 @@ void LoadFileInResource(int name, int type, unsigned int& size, const char*& dat
 #endif
 }
 
+#ifdef WIN
+ByteString WinNarrow(const std::wstring &source)
+{
+	int buffer_size = WideCharToMultiByte(CP_UTF8, 0, source.c_str(), source.size(), nullptr, 0, NULL, NULL);
+	if (!buffer_size)
+	{
+		return "";
+	}
+	std::string output(buffer_size, 0);
+	if (!WideCharToMultiByte(CP_UTF8, 0, source.c_str(), source.size(), &output[0], buffer_size, NULL, NULL))
+	{
+		return "";
+	}
+	return output;
 }
+
+std::wstring WinWiden(const ByteString &source)
+{
+	int buffer_size = MultiByteToWideChar(CP_UTF8, 0, source.c_str(), source.size(), nullptr, 0);
+	if (!buffer_size)
+	{
+		return L"";
+	}
+	std::wstring output(buffer_size, 0);
+	if (!MultiByteToWideChar(CP_UTF8, 0, source.c_str(), source.size(), &output[0], buffer_size))
+	{
+		return L"";
+	}
+	return output;
+}
+#endif
+
+}
+
+#ifdef WIN
+# undef main // thank you sdl
+int main(int argc, char *argv[]);
+int WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
+{
+	int argc;
+	wchar_t **wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+	std::vector<ByteString> argv;
+	for (auto i = 0; i < argc; ++i)
+	{
+		argv.push_back(Platform::WinNarrow(std::wstring(wargv[i])));
+	}
+	std::vector<char *> argp;
+	for (auto &arg : argv)
+	{
+		argp.push_back(&arg[0]);
+	}
+	return main(argc, &argp[0]);
+}
+#endif

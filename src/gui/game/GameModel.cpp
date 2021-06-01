@@ -27,11 +27,13 @@
 #include "simulation/Gravity.h"
 #include "simulation/ElementGraphics.h"
 #include "simulation/ElementClasses.h"
+#include "simulation/GOLString.h"
 
 #include "gui/game/DecorationTool.h"
 #include "gui/interface/Engine.h"
 
 #include <iostream>
+#include <algorithm>
 
 GameModel::GameModel():
 	clipboard(NULL),
@@ -134,7 +136,7 @@ GameModel::GameModel():
 	undoHistoryLimit = Client::Ref().GetPrefInteger("Simulation.UndoHistoryLimit", 5);
 	// cap due to memory usage (this is about 3.4GB of RAM)
 	if (undoHistoryLimit > 200)
-		undoHistoryLimit = 200;
+		SetUndoHistoryLimit(200);
 
 	mouseClickRequired = Client::Ref().GetPrefBool("MouseClickRequired", false);
 	includePressure = Client::Ref().GetPrefBool("Simulation.IncludePressure", true);
@@ -155,23 +157,14 @@ GameModel::~GameModel()
 	Client::Ref().SetPref("Renderer.Decorations", (bool)ren->decorations_enable);
 	Client::Ref().SetPref("Renderer.DebugMode", ren->debugLines); //These two should always be equivalent, even though they are different things
 
-	Client::Ref().SetPref("Simulation.EdgeMode", edgeMode);
 	Client::Ref().SetPref("Simulation.NewtonianGravity", sim->grav->IsEnabled());
 	Client::Ref().SetPref("Simulation.AmbientHeat", sim->aheat_enable);
 	Client::Ref().SetPref("Simulation.PrettyPowder", sim->pretty_powder);
-	Client::Ref().SetPref("Simulation.DecoSpace", sim->deco_space);
 
 	Client::Ref().SetPref("Decoration.Red", (int)colour.Red);
 	Client::Ref().SetPref("Decoration.Green", (int)colour.Green);
 	Client::Ref().SetPref("Decoration.Blue", (int)colour.Blue);
 	Client::Ref().SetPref("Decoration.Alpha", (int)colour.Alpha);
-
-	Client::Ref().SetPref("Simulation.UndoHistoryLimit", undoHistoryLimit);
-
-	Client::Ref().SetPref("MouseClickRequired", mouseClickRequired);
-	Client::Ref().SetPref("Simulation.IncludePressure", includePressure);
-
-	Favorite::Ref().SaveFavoritesToPrefs();
 
 	for (size_t i = 0; i < menuList.size(); i++)
 	{
@@ -303,8 +296,54 @@ void GameModel::BuildMenus()
 	//Build menu for GOL types
 	for(int i = 0; i < NGOL; i++)
 	{
-		Tool * tempTool = new ElementTool(PT_LIFE|PMAPID(i), sim->gmenu[i].name, sim->gmenu[i].description, PIXR(sim->gmenu[i].colour), PIXG(sim->gmenu[i].colour), PIXB(sim->gmenu[i].colour), "DEFAULT_PT_LIFE_"+sim->gmenu[i].name.ToAscii());
+		Tool * tempTool = new ElementTool(PT_LIFE|PMAPID(i), builtinGol[i].name, builtinGol[i].description, PIXR(builtinGol[i].colour), PIXG(builtinGol[i].colour), PIXB(builtinGol[i].colour), "DEFAULT_PT_LIFE_"+builtinGol[i].name.ToAscii());
 		menuList[SC_LIFE]->AddTool(tempTool);
+	}
+	{
+		auto customGOLTypes = Client::Ref().GetPrefByteStringArray("CustomGOL.Types");
+		Json::Value validatedCustomLifeTypes(Json::arrayValue);
+		std::vector<Simulation::CustomGOLData> newCustomGol;
+		for (auto gol : customGOLTypes)
+		{
+			auto parts = gol.FromUtf8().PartitionBy(' ');
+			if (parts.size() != 4)
+			{
+				continue;
+			}
+			Simulation::CustomGOLData gd;
+			gd.nameString = parts[0];
+			gd.ruleString = parts[1];
+			auto &colour1String = parts[2];
+			auto &colour2String = parts[3];
+			if (!ValidateGOLName(gd.nameString))
+			{
+				continue;
+			}
+			gd.rule = ParseGOLString(gd.ruleString);
+			if (gd.rule == -1)
+			{
+				continue;
+			}
+			try
+			{
+				gd.colour1 = colour1String.ToNumber<int>();
+				gd.colour2 = colour2String.ToNumber<int>();
+			}
+			catch (std::exception &)
+			{
+				continue;
+			}
+			newCustomGol.push_back(gd);
+			validatedCustomLifeTypes.append(gol);
+		}
+		// All custom rules that fail validation will be removed
+		Client::Ref().SetPref("CustomGOL.Types", validatedCustomLifeTypes);
+		for (auto &gd : newCustomGol)
+		{
+			Tool * tempTool = new ElementTool(PT_LIFE|PMAPID(gd.rule), gd.nameString, "Custom GOL type: " + gd.ruleString, PIXR(gd.colour1), PIXG(gd.colour1), PIXB(gd.colour1), "DEFAULT_PT_LIFECUST_"+gd.nameString.ToAscii(), NULL);
+			menuList[SC_LIFE]->AddTool(tempTool);
+		}
+		sim->SetCustomGOL(newCustomGol);
 	}
 
 	//Build other menus from wall data
@@ -331,9 +370,10 @@ void GameModel::BuildMenus()
 	}
 	//Add special sign and prop tools
 	menuList[SC_TOOL]->AddTool(new WindTool(0, "WIND", "Creates air movement.", 64, 64, 64, "DEFAULT_UI_WIND"));
-	menuList[SC_TOOL]->AddTool(new PropertyTool());
+	menuList[SC_TOOL]->AddTool(new PropertyTool(this));
 	menuList[SC_TOOL]->AddTool(new SignTool(this));
 	menuList[SC_TOOL]->AddTool(new SampleTool(this));
+	menuList[SC_LIFE]->AddTool(new GOLTool(this));
 
 	//Add decoration tools to menu
 	menuList[SC_DECO]->AddTool(new DecorationTool(ren, DECO_ADD, "ADD", "Colour blending: Add.", 0, 0, 0, "DEFAULT_DECOR_ADD"));
@@ -432,7 +472,7 @@ void GameModel::BuildBrushList()
 			std::cout << "Brushes: Skipping " << brushFiles[i] << ". Could not open" << std::endl;
 			continue;
 		}
-		size_t dimension = std::sqrt((float)brushData.size());
+		auto dimension = size_t(std::sqrt(float(brushData.size())));
 		if (dimension * dimension != brushData.size())
 		{
 			std::cout << "Brushes: Skipping " << brushFiles[i] << ". Invalid bitmap size" << std::endl;
@@ -528,6 +568,7 @@ unsigned int GameModel::GetUndoHistoryLimit()
 void GameModel::SetUndoHistoryLimit(unsigned int undoHistoryLimit_)
 {
 	undoHistoryLimit = undoHistoryLimit_;
+	Client::Ref().SetPref("Simulation.UndoHistoryLimit", undoHistoryLimit);
 }
 
 void GameModel::SetVote(int direction)
@@ -1373,4 +1414,28 @@ void GameModel::SetPerfectCircle(bool perfectCircle)
 		this->perfectCircle = perfectCircle;
 		BuildBrushList();
 	}
+}
+
+void GameModel::RemoveCustomGOLType(const ByteString &identifier)
+{
+	auto customGOLTypes = Client::Ref().GetPrefByteStringArray("CustomGOL.Types");
+	Json::Value newCustomGOLTypes(Json::arrayValue);
+	for (auto gol : customGOLTypes)
+	{
+		auto parts = gol.PartitionBy(' ');
+		bool remove = false;
+		if (parts.size())
+		{
+			if ("DEFAULT_PT_LIFECUST_" + parts[0] == identifier)
+			{
+				remove = true;
+			}
+		}
+		if (!remove)
+		{
+			newCustomGOLTypes.append(gol);
+		}
+	}
+	Client::Ref().SetPref("CustomGOL.Types", newCustomGOLTypes);
+	BuildMenus();
 }

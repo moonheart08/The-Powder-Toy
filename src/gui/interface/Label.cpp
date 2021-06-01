@@ -8,6 +8,7 @@
 #include "ContextMenu.h"
 
 #include "graphics/Graphics.h"
+#include "graphics/FontReader.h"
 
 using namespace ui;
 
@@ -112,6 +113,10 @@ void Label::copySelection()
 	if (HasSelection())
 	{
 		ClipboardPush(format::CleanString(text.Between(selectionIndexL.raw_index, selectionIndexH.raw_index), false, true, false).ToUtf8());
+	}
+	else
+	{
+		ClipboardPush(format::CleanString(text, false, true, false).ToUtf8());
 	}
 }
 

@@ -1,3 +1,4 @@
+#include "Config.h"
 #ifdef LUACONSOLE
 
 #include "LuaScriptInterface.h"
@@ -6,7 +7,6 @@
 #include <fstream>
 #include <algorithm>
 
-#include "Config.h"
 #include "Format.h"
 #include "Platform.h"
 #include "PowderToy.h"
@@ -23,6 +23,8 @@
 #include "LuaSlider.h"
 #include "LuaTextbox.h"
 #include "LuaWindow.h"
+
+#include "LuaTCPSocket.h"
 
 #include "gui/interface/Window.h"
 #include "gui/interface/Engine.h"
@@ -60,9 +62,16 @@ extern "C"
 #endif
 #include <sys/stat.h>
 #include <dirent.h>
-#include "socket/luasocket.h"
 }
-#include "socket/socket.lua.h"
+#include "eventcompat.lua.h"
+
+// idea from mniip, makes things much simpler
+#define SETCONST(L, NAME)\
+	lua_pushinteger(L, NAME);\
+	lua_setfield(L, -2, #NAME)
+#define SETCONSTF(L, NAME)\
+	lua_pushnumber(L, NAME);\
+	lua_setfield(L, -2, #NAME)
 
 GameModel * luacon_model;
 GameController * luacon_controller;
@@ -114,7 +123,8 @@ LuaScriptInterface::LuaScriptInterface(GameController * c, GameModel * m):
 	luacon_selectedreplace(""),
 	luacon_mousedown(false),
 	currentCommand(false),
-	legacy(new TPTScriptInterface(c, m))
+	legacy(new TPTScriptInterface(c, m)),
+	textInputRefcount(0)
 {
 	luacon_model = m;
 	luacon_controller = c;
@@ -123,22 +133,20 @@ LuaScriptInterface::LuaScriptInterface(GameController * c, GameModel * m):
 	luacon_ren = m->GetRenderer();
 	luacon_ci = this;
 
+	for (auto moving = 0; moving < PT_NUM; ++moving)
+	{
+		for (auto into = 0; into < PT_NUM; ++into)
+		{
+			custom_can_move[moving][into] = 0;
+		}
+	}
+
 	//New TPT API
 	l = luaL_newstate();
+	tpt_lua_setmainthread(l);
 	lua_atpanic(l, atPanic);
 	luaL_openlibs(l);
 	luaopen_bit(l);
-	luaopen_socket_core(l);
-	lua_getglobal(l, "package");
-	lua_pushstring(l, "loaded");
-	lua_rawget(l, -2);
-	lua_pushstring(l, "socket");
-	lua_rawget(l, -2);
-	lua_pushstring(l, "socket.core");
-	lua_pushvalue(l, -2);
-	lua_rawset(l, -4);
-	lua_pop(l, 3);
-	luaopen_socket(l);
 
 	lua_pushstring(l, "Luacon_ci");
 	lua_pushlightuserdata(l, this);
@@ -154,6 +162,7 @@ LuaScriptInterface::LuaScriptInterface(GameController * c, GameModel * m):
 	initPlatformAPI();
 	initEventAPI();
 	initHttpAPI();
+	initSocketAPI();
 
 	//Old TPT API
 	int currentElementMeta, currentElement;
@@ -212,6 +221,7 @@ LuaScriptInterface::LuaScriptInterface(GameController * c, GameModel * m):
 		{"graphics_func",&luatpt_graphics_func},
 		{"get_clipboard", &platform_clipboardCopy},
 		{"set_clipboard", &platform_clipboardPaste},
+		{"setdrawcap", &luatpt_setdrawcap},
 		{NULL,NULL}
 	};
 
@@ -291,7 +301,7 @@ tpt.partsdata = nil");
 	}
 
 	tptPart = new LuaSmartRef(l);
-	tptPart->Assign(-1);
+	tptPart->Assign(l, -1);
 	lua_pop(l, 1);
 #endif
 
@@ -361,7 +371,25 @@ tpt.partsdata = nil");
 	initLegacyProps();
 
 	ui::Engine::Ref().LastTick(Platform::GetTime());
-	luaopen_eventcompat(l);
+	if (luaL_loadbuffer(l, (const char *)eventcompat_lua, eventcompat_lua_size, "@[built-in eventcompat.lua]") || lua_pcall(l, 0, 0, 0))
+	{
+		throw std::runtime_error(ByteString("failed to load built-in eventcompat: ") + lua_tostring(l, -1));
+	}
+}
+
+void LuaScriptInterface::custom_init_can_move()
+{
+	luacon_sim->init_can_move();
+	for (auto moving = 0; moving < PT_NUM; ++moving)
+	{
+		for (auto into = 0; into < PT_NUM; ++into)
+		{
+			if (custom_can_move[moving][into] & 0x80)
+			{
+				luacon_sim->can_move[moving][into] = custom_can_move[moving][into] & 0x7F;
+			}
+		}
+	}
 }
 
 void LuaScriptInterface::Init()
@@ -481,6 +509,9 @@ void LuaScriptInterface::initInterfaceAPI()
 		{"closeWindow", interface_closeWindow},
 		{"addComponent", interface_addComponent},
 		{"removeComponent", interface_removeComponent},
+		{"grabTextInput", interface_grabTextInput},
+		{"dropTextInput", interface_dropTextInput},
+		{"textInputRect", interface_textInputRect},
 		{NULL, NULL}
 	};
 	luaL_register(l, "interface", interfaceAPIMethods);
@@ -522,7 +553,7 @@ int LuaScriptInterface::interface_addComponent(lua_State * l)
 		if (ok.second)
 		{
 			auto it = ok.first;
-			it->second.Assign(1);
+			it->second.Assign(l, 1);
 			it->first->owner_ref = it->second;
 		}
 		luacon_ci->Window->AddComponent(luaComponent->GetComponent());
@@ -560,6 +591,30 @@ int LuaScriptInterface::interface_removeComponent(lua_State * l)
 			luacon_ci->grabbed_components.erase(it);
 		}
 	}
+	return 0;
+}
+
+int LuaScriptInterface::interface_grabTextInput(lua_State * l)
+{
+	luacon_ci->textInputRefcount += 1;
+	luacon_controller->GetView()->DoesTextInput = luacon_ci->textInputRefcount > 0;
+	return 0;
+}
+
+int LuaScriptInterface::interface_dropTextInput(lua_State * l)
+{
+	luacon_ci->textInputRefcount -= 1;
+	luacon_controller->GetView()->DoesTextInput = luacon_ci->textInputRefcount > 0;
+	return 0;
+}
+
+int LuaScriptInterface::interface_textInputRect(lua_State * l)
+{
+	int x = luaL_checkint(l, 1);
+	int y = luaL_checkint(l, 2);
+	int w = luaL_checkint(l, 3);
+	int h = luaL_checkint(l, 4);
+	ui::Engine::Ref().TextInputRect(ui::Point{ x, y }, ui::Point{ w, h });
 	return 0;
 }
 
@@ -722,7 +777,7 @@ int LuaScriptInterface::simulation_newsign(lua_State *l)
 
 	luacon_sim->signs.push_back(sign(text, x, y, (sign::Justification)ju));
 
-	lua_pushnumber(l, luacon_sim->signs.size());
+	lua_pushinteger(l, luacon_sim->signs.size());
 	return 1;
 }
 
@@ -818,8 +873,8 @@ void LuaScriptInterface::initSimulationAPI()
 	SETCONST(l, ST);
 	SETCONST(l, ITH);
 	SETCONST(l, ITL);
-	SETCONST(l, IPH);
-	SETCONST(l, IPL);
+	SETCONSTF(l, IPH);
+	SETCONSTF(l, IPL);
 	SETCONST(l, PT_NUM);
 	lua_pushinteger(l, 0); lua_setfield(l, -2, "NUM_PARTS");
 	SETCONST(l, R_TEMP);
@@ -953,7 +1008,7 @@ int LuaScriptInterface::simulation_partChangeType(lua_State * l)
 	int partIndex = lua_tointeger(l, 1);
 	if(partIndex < 0 || partIndex >= NPART || !luacon_sim->parts[partIndex].type)
 		return 0;
-	luacon_sim->part_change_type(partIndex, luacon_sim->parts[partIndex].x+0.5f, luacon_sim->parts[partIndex].y+0.5f, lua_tointeger(l, 2));
+	luacon_sim->part_change_type(partIndex, int(luacon_sim->parts[partIndex].x+0.5f), int(luacon_sim->parts[partIndex].y+0.5f), lua_tointeger(l, 2));
 	return 0;
 }
 
@@ -1081,7 +1136,7 @@ int LuaScriptInterface::simulation_partProperty(lua_State * l)
 	{
 		if (prop == properties.begin() + 0) // i.e. it's .type
 		{
-			luacon_sim->part_change_type(particleID, luacon_sim->parts[particleID].x+0.5f, luacon_sim->parts[particleID].y+0.5f, luaL_checkinteger(l, 3));
+			luacon_sim->part_change_type(particleID, int(luacon_sim->parts[particleID].x+0.5f), int(luacon_sim->parts[particleID].y+0.5f), luaL_checkinteger(l, 3));
 		}
 		else
 		{
@@ -1910,7 +1965,9 @@ int LuaScriptInterface::simulation_canMove(lua_State * l)
 	}
 	else
 	{
-		luacon_sim->can_move[movingElement][destinationElement] = luaL_checkint(l, 3);
+		int setting = luaL_checkint(l, 3) & 0x7F;
+		luacon_ci->custom_can_move[movingElement][destinationElement] = setting | 0x80;
+		luacon_sim->can_move[movingElement][destinationElement] = setting;
 		return 0;
 	}
 }
@@ -2025,6 +2082,75 @@ int PartsClosure(lua_State *l)
 	return 0;
 }
 
+static int NeighboursClosure(lua_State *l)
+{
+	int cx = lua_tointeger(l, lua_upvalueindex(1));
+	int cy = lua_tointeger(l, lua_upvalueindex(2));
+	int rx = lua_tointeger(l, lua_upvalueindex(3));
+	int ry = lua_tointeger(l, lua_upvalueindex(4));
+	int t = lua_tointeger(l, lua_upvalueindex(5));
+	int x = lua_tointeger(l, lua_upvalueindex(6));
+	int y = lua_tointeger(l, lua_upvalueindex(7));
+	while (y <= cy + ry)
+	{
+		int px = x;
+		int py = y;
+		x += 1;
+		if (x > cx + rx)
+		{
+			x = cx - rx;
+			y += 1;
+		}
+		int r = luacon_sim->pmap[py][px];
+		if (!(r && (!t || TYP(r) == t))) // * If not [exists and is of the correct type]
+		{
+			r = 0;
+		}
+		if (!r)
+		{
+			r = luacon_sim->photons[py][px];
+			if (!(r && (!t || TYP(r) == t))) // * If not [exists and is of the correct type]
+			{
+				r = 0;
+			}
+		}
+		if (r)
+		{
+			lua_pushnumber(l, x);
+			lua_replace(l, lua_upvalueindex(6));
+			lua_pushnumber(l, y);
+			lua_replace(l, lua_upvalueindex(7));
+			lua_pushnumber(l, ID(r));
+			lua_pushnumber(l, px);
+			lua_pushnumber(l, py);
+			return 3;
+		}
+	}
+	return 0;
+}
+
+int LuaScriptInterface::simulation_neighbours(lua_State * l)
+{
+	int cx = luaL_checkint(l, 1);
+	int cy = luaL_checkint(l, 2);
+	int rx = luaL_optint(l, 3, 2);
+	int ry = luaL_optint(l, 4, 2);
+	int t = luaL_optint(l, 5, PT_NONE);
+	if (rx < 0 || ry < 0)
+	{
+		luaL_error(l, "Invalid radius");
+	}
+	lua_pushnumber(l, cx);
+	lua_pushnumber(l, cy);
+	lua_pushnumber(l, rx);
+	lua_pushnumber(l, ry);
+	lua_pushnumber(l, t);
+	lua_pushnumber(l, cx - rx);
+	lua_pushnumber(l, cy - ry);
+	lua_pushcclosure(l, NeighboursClosure, 7);
+	return 1;
+}
+
 int LuaScriptInterface::simulation_parts(lua_State *l)
 {
 	lua_pushnumber(l, 0);
@@ -2055,59 +2181,6 @@ int LuaScriptInterface::simulation_photons(lua_State * l)
 	if (!TYP(r))
 		return 0;
 	lua_pushnumber(l, ID(r));
-	return 1;
-}
-
-int NeighboursClosure(lua_State * l)
-{
-	int rx=lua_tointeger(l, lua_upvalueindex(1));
-	int ry=lua_tointeger(l, lua_upvalueindex(2));
-	int sx=lua_tointeger(l, lua_upvalueindex(3));
-	int sy=lua_tointeger(l, lua_upvalueindex(4));
-	int x=lua_tointeger(l, lua_upvalueindex(5));
-	int y=lua_tointeger(l, lua_upvalueindex(6));
-	int i = 0;
-	do
-	{
-		x++;
-		if(x>rx)
-		{
-			x=-rx;
-			y++;
-			if(y>ry)
-				return 0;
-		}
-		if(!(x || y) || sx+x<0 || sy+y<0 || sx+x>=XRES*CELL || sy+y>=YRES*CELL)
-		{
-			continue;
-		}
-		i=luacon_sim->pmap[y+sy][x+sx];
-		if(!i)
-			i=luacon_sim->photons[y+sy][x+sx];
-	} while(!TYP(i));
-	lua_pushnumber(l, x);
-	lua_replace(l, lua_upvalueindex(5));
-	lua_pushnumber(l, y);
-	lua_replace(l, lua_upvalueindex(6));
-	lua_pushnumber(l, ID(i));
-	lua_pushnumber(l, x+sx);
-	lua_pushnumber(l, y+sy);
-	return 3;
-}
-
-int LuaScriptInterface::simulation_neighbours(lua_State * l)
-{
-	int x=luaL_checkint(l, 1);
-	int y=luaL_checkint(l, 2);
-	int rx=luaL_optint(l, 3, 2);
-	int ry=luaL_optint(l, 4, 2);
-	lua_pushnumber(l, rx);
-	lua_pushnumber(l, ry);
-	lua_pushnumber(l, x);
-	lua_pushnumber(l, y);
-	lua_pushnumber(l, -rx-1);
-	lua_pushnumber(l, -ry);
-	lua_pushcclosure(l, NeighboursClosure, 6);
 	return 1;
 }
 
@@ -2158,6 +2231,7 @@ void LuaScriptInterface::initRendererAPI()
 		{"decorations", renderer_decorations}, //renderer_debugHUD
 		{"grid", renderer_grid},
 		{"debugHUD", renderer_debugHUD},
+		{"showBrush", renderer_showBrush},
 		{"depth3d", renderer_depth3d},
 		{"zoomEnabled", renderer_zoomEnabled},
 		{"zoomWindow", renderer_zoomWindowInfo},
@@ -2340,6 +2414,19 @@ int LuaScriptInterface::renderer_debugHUD(lua_State * l)
 	}
 	int debug = luaL_optint(l, 1, -1);
 	luacon_controller->SetDebugHUD(debug);
+	return 0;
+}
+
+int LuaScriptInterface::renderer_showBrush(lua_State * l)
+{
+	int acount = lua_gettop(l);
+	if (acount == 0)
+	{
+		lua_pushnumber(l, luacon_controller->GetBrushEnable());
+		return 1;
+	}
+	int brush = luaL_optint(l, 1, -1);
+	luacon_controller->SetBrushEnable(brush);
 	return 0;
 }
 
@@ -2634,7 +2721,14 @@ int LuaScriptInterface::elements_loadDefault(lua_State * l)
 	}
 
 	luacon_model->BuildMenus();
-	luacon_sim->init_can_move();
+	for (auto moving = 0; moving < PT_NUM; ++moving)
+	{
+		for (auto into = 0; into < PT_NUM; ++into)
+		{
+			luacon_ci->custom_can_move[moving][into] = 0;
+		}
+	}
+	luacon_ci->custom_init_can_move();
 	std::fill(luacon_ren->graphicscache, luacon_ren->graphicscache+PT_NUM, gcache_item());
 	return 0;
 }
@@ -2702,6 +2796,13 @@ int LuaScriptInterface::elements_allocate(lua_State * l)
 		lua_setfield(l, -2, identifier.c_str());
 		lua_pop(l, 1);
 	}
+
+	for (auto elem = 0; elem < PT_NUM; ++elem)
+	{
+		luacon_ci->custom_can_move[elem][newID] = 0;
+		luacon_ci->custom_can_move[newID][elem] = 0;
+	}
+	luacon_ci->custom_init_can_move();
 
 	lua_pushinteger(l, newID);
 	return 1;
@@ -2795,7 +2896,7 @@ static bool luaCtypeDrawWrapper(CTYPEDRAW_FUNC_ARGS)
 int LuaScriptInterface::elements_element(lua_State * l)
 {
 	int id = luaL_checkinteger(l, 1);
-	if (!luacon_sim->IsValidElement(id))
+	if (!luacon_sim->IsElementOrNone(id))
 	{
 		return luaL_error(l, "Invalid element");
 	}
@@ -2818,7 +2919,7 @@ int LuaScriptInterface::elements_element(lua_State * l)
 		lua_getfield(l, -1, "Update");
 		if (lua_type(l, -1) == LUA_TFUNCTION)
 		{
-			lua_el_func[id].Assign(-1);
+			lua_el_func[id].Assign(l, -1);
 			lua_el_mode[id] = 1;
 		}
 		else if (lua_type(l, -1) == LUA_TBOOLEAN && !lua_toboolean(l, -1))
@@ -2832,7 +2933,7 @@ int LuaScriptInterface::elements_element(lua_State * l)
 		lua_getfield(l, -1, "Graphics");
 		if (lua_type(l, -1) == LUA_TFUNCTION)
 		{
-			lua_gr_func[id].Assign(-1);
+			lua_gr_func[id].Assign(l, -1);
 		}
 		else if (lua_type(l, -1) == LUA_TBOOLEAN && !lua_toboolean(l, -1))
 		{
@@ -2844,7 +2945,7 @@ int LuaScriptInterface::elements_element(lua_State * l)
 		lua_getfield(l, -1, "Create");
 		if (lua_type(l, -1) == LUA_TFUNCTION)
 		{
-			luaCreateHandlers[id].Assign(-1);
+			luaCreateHandlers[id].Assign(l, -1);
 			luacon_sim->elements[id].Create = luaCreateWrapper;
 		}
 		else if (lua_type(l, -1) == LUA_TBOOLEAN && !lua_toboolean(l, -1))
@@ -2857,7 +2958,7 @@ int LuaScriptInterface::elements_element(lua_State * l)
 		lua_getfield(l, -1, "CreateAllowed");
 		if (lua_type(l, -1) == LUA_TFUNCTION)
 		{
-			luaCreateAllowedHandlers[id].Assign(-1);
+			luaCreateAllowedHandlers[id].Assign(l, -1);
 			luacon_sim->elements[id].CreateAllowed = luaCreateAllowedWrapper;
 		}
 		else if (lua_type(l, -1) == LUA_TBOOLEAN && !lua_toboolean(l, -1))
@@ -2870,7 +2971,7 @@ int LuaScriptInterface::elements_element(lua_State * l)
 		lua_getfield(l, -1, "ChangeType");
 		if (lua_type(l, -1) == LUA_TFUNCTION)
 		{
-			luaChangeTypeHandlers[id].Assign(-1);
+			luaChangeTypeHandlers[id].Assign(l, -1);
 			luacon_sim->elements[id].ChangeType = luaChangeTypeWrapper;
 		}
 		else if (lua_type(l, -1) == LUA_TBOOLEAN && !lua_toboolean(l, -1))
@@ -2883,7 +2984,7 @@ int LuaScriptInterface::elements_element(lua_State * l)
 		lua_getfield(l, -1, "CtypeDraw");
 		if (lua_type(l, -1) == LUA_TFUNCTION)
 		{
-			luaCtypeDrawHandlers[id].Assign(-1);
+			luaCtypeDrawHandlers[id].Assign(l, -1);
 			luacon_sim->elements[id].CtypeDraw = luaCtypeDrawWrapper;
 		}
 		else if (lua_type(l, -1) == LUA_TBOOLEAN && !lua_toboolean(l, -1))
@@ -2910,7 +3011,7 @@ int LuaScriptInterface::elements_element(lua_State * l)
 		lua_pop(l, 1);
 
 		luacon_model->BuildMenus();
-		luacon_sim->init_can_move();
+		luacon_ci->custom_init_can_move();
 		luacon_ren->graphicscache[id].isready = 0;
 
 		return 0;
@@ -2946,7 +3047,7 @@ int LuaScriptInterface::elements_element(lua_State * l)
 int LuaScriptInterface::elements_property(lua_State * l)
 {
 	int id = luaL_checkinteger(l, 1);
-	if (!luacon_sim->IsValidElement(id))
+	if (!luacon_sim->IsElementOrNone(id))
 	{
 		return luaL_error(l, "Invalid element");
 	}
@@ -2966,7 +3067,7 @@ int LuaScriptInterface::elements_property(lua_State * l)
 				if (prop->Type == StructProperty::TransitionType)
 				{
 					int type = luaL_checkinteger(l, 3);
-					if (!luacon_sim->IsValidElement(type) && type != NT && type != ST)
+					if (!luacon_sim->IsElementOrNone(type) && type != NT && type != ST)
 					{
 						return luaL_error(l, "Invalid element");
 					}
@@ -2977,7 +3078,7 @@ int LuaScriptInterface::elements_property(lua_State * l)
 			}
 
 			luacon_model->BuildMenus();
-			luacon_sim->init_can_move();
+			luacon_ci->custom_init_can_move();
 			luacon_ren->graphicscache[id].isready = 0;
 		}
 		else if (propertyName == "Update")
@@ -2998,7 +3099,7 @@ int LuaScriptInterface::elements_property(lua_State * l)
 					lua_el_mode[id] = 1; //update after
 					break;
 				}
-				lua_el_func[id].Assign(3);
+				lua_el_func[id].Assign(l, 3);
 			}
 			else if (lua_type(l, 3) == LUA_TBOOLEAN && !lua_toboolean(l, 3))
 			{
@@ -3011,7 +3112,7 @@ int LuaScriptInterface::elements_property(lua_State * l)
 		{
 			if (lua_type(l, 3) == LUA_TFUNCTION)
 			{
-				lua_gr_func[id].Assign(3);
+				lua_gr_func[id].Assign(l, 3);
 			}
 			else if (lua_type(l, 3) == LUA_TBOOLEAN && !lua_toboolean(l, 3))
 			{
@@ -3024,7 +3125,7 @@ int LuaScriptInterface::elements_property(lua_State * l)
 		{
 			if (lua_type(l, 3) == LUA_TFUNCTION)
 			{
-				luaCreateHandlers[id].Assign(3);
+				luaCreateHandlers[id].Assign(l, 3);
 				luacon_sim->elements[id].Create = luaCreateWrapper;
 			}
 			else if (lua_type(l, 3) == LUA_TBOOLEAN && !lua_toboolean(l, 3))
@@ -3037,7 +3138,7 @@ int LuaScriptInterface::elements_property(lua_State * l)
 		{
 			if (lua_type(l, 3) == LUA_TFUNCTION)
 			{
-				luaCreateAllowedHandlers[id].Assign(3);
+				luaCreateAllowedHandlers[id].Assign(l, 3);
 				luacon_sim->elements[id].CreateAllowed = luaCreateAllowedWrapper;
 			}
 			else if (lua_type(l, 3) == LUA_TBOOLEAN && !lua_toboolean(l, 3))
@@ -3050,7 +3151,7 @@ int LuaScriptInterface::elements_property(lua_State * l)
 		{
 			if (lua_type(l, 3) == LUA_TFUNCTION)
 			{
-				luaChangeTypeHandlers[id].Assign(3);
+				luaChangeTypeHandlers[id].Assign(l, 3);
 				luacon_sim->elements[id].ChangeType = luaChangeTypeWrapper;
 			}
 			else if (lua_type(l, 3) == LUA_TBOOLEAN && !lua_toboolean(l, 3))
@@ -3063,7 +3164,7 @@ int LuaScriptInterface::elements_property(lua_State * l)
 		{
 			if (lua_type(l, 3) == LUA_TFUNCTION)
 			{
-				luaCtypeDrawHandlers[id].Assign(3);
+				luaCtypeDrawHandlers[id].Assign(l, 3);
 				luacon_sim->elements[id].CtypeDraw = luaCtypeDrawWrapper;
 			}
 			else if (lua_type(l, 3) == LUA_TBOOLEAN && !lua_toboolean(l, 3))
@@ -3127,7 +3228,7 @@ int LuaScriptInterface::elements_property(lua_State * l)
 int LuaScriptInterface::elements_free(lua_State * l)
 {
 	int id = luaL_checkinteger(l, 1);
-	if (!luacon_sim->IsValidElement(id))
+	if (!luacon_sim->IsElement(id))
 	{
 		return luaL_error(l, "Invalid element");
 	}
@@ -3673,6 +3774,7 @@ void LuaScriptInterface::initEventAPI()
 	lua_pushinteger(l, LuaEvents::keypress); lua_setfield(l, -2, "keypress");
 	lua_pushinteger(l, LuaEvents::keyrelease); lua_setfield(l, -2, "keyrelease");
 	lua_pushinteger(l, LuaEvents::textinput); lua_setfield(l, -2, "textinput");
+	lua_pushinteger(l, LuaEvents::textediting); lua_setfield(l, -2, "textediting");
 	lua_pushinteger(l, LuaEvents::mousedown); lua_setfield(l, -2, "mousedown");
 	lua_pushinteger(l, LuaEvents::mouseup); lua_setfield(l, -2, "mouseup");
 	lua_pushinteger(l, LuaEvents::mousemove); lua_setfield(l, -2, "mousemove");
@@ -3893,21 +3995,24 @@ void LuaScriptInterface::initHttpAPI()
 	lua_pushcfunction(l, http_request_gc);
 	lua_setfield(l, -2, "__gc");
 	lua_newtable(l);
-	lua_pushcfunction(l, http_request_status);
-	lua_setfield(l, -2, "status");
-	lua_pushcfunction(l, http_request_progress);
-	lua_setfield(l, -2, "progress");
-	lua_pushcfunction(l, http_request_cancel);
-	lua_setfield(l, -2, "cancel");
-	lua_pushcfunction(l, http_request_finish);
-	lua_setfield(l, -2, "finish");
-	lua_setfield(l, -2, "__index");
-	struct luaL_Reg httpAPIMethods [] = {
-		{"get", http_get},
-		{"post", http_post},
-		{NULL, NULL}
+	struct luaL_Reg httpRequestIndexMethods[] = {
+		{ "status", http_request_status },
+		{ "progress", http_request_progress },
+		{ "cancel", http_request_cancel },
+		{ "finish", http_request_finish },
+		{ NULL, NULL }
 	};
-	luaL_register(l, "http", httpAPIMethods);
+	luaL_register(l, NULL, httpRequestIndexMethods);
+	lua_setfield(l, -2, "__index");
+	lua_pop(l, 1);
+	lua_newtable(l);
+	struct luaL_Reg httpMethods[] = {
+		{ "get", http_get },
+		{ "post", http_post },
+		{ NULL, NULL }
+	};
+	luaL_register(l, NULL, httpMethods);
+	lua_setglobal(l, "http");
 }
 
 bool LuaScriptInterface::HandleEvent(LuaEvents::EventTypes eventType, Event * event)
@@ -4216,4 +4321,10 @@ LuaScriptInterface::~LuaScriptInterface() {
 	lua_close(l);
 	delete legacy;
 }
+
+void LuaScriptInterface::initSocketAPI()
+{
+	LuaTCPSocket::Open(l);
+}
+
 #endif

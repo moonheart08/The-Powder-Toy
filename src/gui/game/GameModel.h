@@ -1,5 +1,6 @@
 #ifndef GAMEMODEL_H
 #define GAMEMODEL_H
+#include "Config.h"
 
 #include <vector>
 #include <deque>
@@ -215,10 +216,19 @@ public:
 	bool GetIncludePressure();
 	void SetIncludePressure(bool includePressure);
 	void SetPerfectCircle(bool perfectCircle);
+	inline bool GetPerfectCircle() const
+	{
+		return perfectCircle;
+	}
 
 	std::vector<Notification*> GetNotifications();
 	void AddNotification(Notification * notification);
 	void RemoveNotification(Notification * notification);
+
+	void RemoveCustomGOLType(const ByteString &identifier);
+
+	ByteString SelectNextIdentifier;
+	int SelectNextTool;
 };
 
 #endif // GAMEMODEL_H
