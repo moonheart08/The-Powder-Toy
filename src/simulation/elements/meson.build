@@ -191,6 +191,9 @@ simulation_elem_ids = [
 	[ 'VSNS',   189 ],
 	[ 'ROCK',   190 ],
 	[ 'LITH',   191 ],
+	[ 'IPTI',   192 ],
+	[ 'IPTO',   193 ],
+	[ 'IDFI',   194 ],
 ]
 
 simulation_elem_src = []
